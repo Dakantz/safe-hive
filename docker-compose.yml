@@ -1,0 +1,60 @@
+services:
+  #hf download hf://unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_S.gguf --local-dir ./models/gguf      
+  lm:
+    restart: always
+    runtime: nvidia
+    environment:
+      - VLLM_LOGGING_LEVEL=DEBUG
+      - NVIDIA_VISIBLE_DEVICES=0
+
+    image: ghcr.io/ggml-org/llama.cpp:full-cuda13
+    # entrypoint: ["/bin/sh", "-c"]
+    # command: >
+    #   ls -la /gguf
+    entrypoint: ["/app/llama-server"]
+    command: >
+      -m /gguf/Qwen3.8-27B-UD-Q4_K_S.gguf --port 8000 -c 64000 -ngl all --host 0.0.0.0 --jinja --temp 1 --top-k 20 --top-p 0.95 --min-p 0 --chat-template-kwargs '{"reasoning_effort":"low"}'
+    cpus: 16
+    mem_limit: 32g
+    volumes:
+      - ./models/gguf:/gguf
+    ports:
+      - "8998:8000"
+      #hf download hf://LiquidAI/LFM2.5-24B-A2B-GGUF/LFM2.5-24B-A2B-QAD-Q4_0.gguf
+  lm-cpu:
+    restart: always
+    runtime: nvidia
+    environment:
+      - VLLM_LOGGING_LEVEL=DEBUG
+      - NVIDIA_VISIBLE_DEVICES=0
+
+    image: ghcr.io/ggml-org/llama.cpp:full
+    # entrypoint: ["/bin/sh", "-c"]
+    # command: >
+    #   ls -la /gguf
+    entrypoint: ["/app/llama-server"]
+    command: >
+      -m /gguf/LFM2.5-2.6B-QAD-Q4_0.gguf --port 8000 -c 131072 -ngl all --host 0.0.0.0 -ctk q4_0 -ctv q4_0 --temp 0.1 --top-k 50 --top-p 0.95 --repeat-penalty 1.05 --min-p 0 --chat-template-kwargs '{"reasoning_effort":"low"}'
+    cpus: 16
+    mem_limit: 32g
+    volumes:
+      - ./models/gguf:/gguf
+    ports:
+      - "8999:8000"
+  agent:
+    restart: always
+    image: nousresearch/hermes-agent
+    command: >
+      gateway run
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - HERMES_DASHBOARD=1
+      - HERMES_UID=${UID}
+      - HERMES_GID=${GID}
+    runtime: nvidia
+    ports:
+      - "8642:8642"
+      - "9119:9119"
+    volumes:
+      - ./.hermes:/opt/data
+      - ./models/gguf:/gguf

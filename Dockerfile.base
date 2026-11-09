@@ -1,0 +1,50 @@
+FROM ubuntu:latest
+
+RUN apt update && apt install -yy sudo
+# Create a new user and group named "$UNAME" instead of "ubuntu" and set the UID and GID to match the host user
+ARG UID=1000
+ARG GID=1000
+ARG UNAME=$UNAME
+RUN echo "Setting UID=${UID} & GID=${GID}" && usermod -l $UNAME ubuntu \
+    # && groupmod -g $GID $UNAME \
+    && groupmod -n $UNAME ubuntu \
+    && groupmod -g $GID $UNAME \
+    && usermod -u $UID $UNAME \
+    && usermod -g $GID $UNAME \
+    && usermod -d /home/$UNAME  -m $UNAME
+
+RUN --mount=target=/var/lib/apt/lists,type=cache \
+    --mount=target=/var/cache/apt,type=cache \ 
+    apt-get -y update
+RUN --mount=target=/var/lib/apt/lists,type=cache \
+    --mount=target=/var/cache/apt,type=cache \
+    apt install -y apt-transport-https ca-certificates gnupg unzip curl software-properties-common curl gcc git python3 python3-pip python3-venv unzip nodejs npm chromium \
+    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-freefont-ttf g++
+
+RUN install -d -m 0755 /etc/apt/keyrings && \
+    curl https://packages.mozilla.org/apt/repo-signing-key.gpg | tee /etc/apt/keyrings/packages.mozilla.org.asc > /dev/null && \
+    echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" | tee -a /etc/apt/sources.list.d/mozilla.list > /dev/null && \
+    echo 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000' | tee /etc/apt/preferences.d/mozilla 
+RUN --mount=target=/var/lib/apt/lists,type=cache \
+    --mount=target=/var/cache/apt,type=cache \ 
+    apt-get -y update && apt install -y firefox openjdk-25-jdk maven 
+
+RUN apt install -yy bubblewrap socat
+WORKDIR /home/$UNAME
+
+ADD ./install-dependencies.sh /usr/bin/install-dependencies.sh
+RUN passwd -d $UNAME  # no password
+
+COPY --from=ghcr.io/typst/typst:latest /bin/typst /usr/bin/typst
+
+USER $UNAME
+RUN /usr/bin/install-dependencies.sh
+# RUN ln -s /home/$UNAME/.bun/bin/bun /home/$UNAME/.local/bin/bun
+# RUN ln -s /home/$UNAME/.cargo/bin/cargo /home/$UNAME/.local/bin/cargo
+# COPY ./.agents /home/$UNAME/.agents
+# RUN chown $UNAME:$UNAME /home/$UNAME/.bashrc
+
+
+RUN curl -fsSL https://pi.dev/install.sh | sh
+RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash

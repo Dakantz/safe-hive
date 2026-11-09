@@ -1,0 +1,6 @@
+models/gguf/*.gguf
+.claude
+.hermes
+.pi
+.bash_history
+.history

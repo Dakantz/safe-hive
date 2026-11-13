@@ -1,0 +1,8 @@
+#!/usr/bin/env fish
+cp ollama.plist /Library/LaunchDaemons/
+switch "$argv[1]"
+    case "start"
+        launchctl load /Library/LaunchDaemons/ollama.plist
+    case "stop"
+        launchctl unload /Library/LaunchDaemons/ollama.plist
+end

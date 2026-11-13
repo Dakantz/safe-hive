@@ -1,0 +1,174 @@
+#!/usr/bin/env fish
+
+if contains -- --help $argv; or contains -- -h $argv
+    echo "Usage: hive [flags] [subcommand | [--] container-command...]
+
+Subcommands:
+  list                    list running agent containers
+  stop                    stop all running agent containers
+  reconnect               re-establish this container's networking (wifi/VPN)
+  build                  build the docker image (default: benedikt-agent)
+
+Container commands:
+  hive                run claude in the container (default)
+  hive pi             run pi in the container
+  hive <cmd...>       run <cmd...> in the container
+  hive --shell -- <c> run <c> via 'bash -lc' in the container
+  hive -- <cmd...>    run <cmd...>, even if <cmd> collides with a
+                          subcommand name (e.g. '-- stop')
+
+Flags:
+  --root                  run the container as root and --privileged
+  --shell                 run the container command through 'bash -lc'
+  --image <name>          override the docker image (default: benedikt-agent)
+  -v, --volume <path>     mount <path> (relative ok) at the same absolute path;
+                          <path>:<dst>[:ro] also works. Applies on container
+                          creation only (repeatable, must come before the command)
+  -h, --help              show this help"
+    exit 0
+end
+set AGENT_DIR $HOME/agents
+set UID (id -u)
+set GID (id -g)
+# --root flag: run the container as root and with --privileged
+set ROOT_MODE 0
+if contains -- --root $argv
+    set ROOT_MODE 1
+    set argv (string match -v -- --root $argv)
+end
+
+# --shell flag: run the container command through `bash -lc` instead of exec'ing
+# it directly, e.g. `hivemind --shell -- 'cd sub && npm test'`
+set SHELL_MODE 0
+if contains -- --shell $argv
+    set SHELL_MODE 1
+    set argv (string match -v -- --shell $argv)
+end
+
+# --image flag: override the docker image to use
+set IMAGE benedikt-agent
+# for i in (seq (count $argv))
+#     if test "$argv[$i]" = --image
+#         set IMAGE $argv[(math $i + 1)]
+#         set argv[$i] ''
+#         set argv[(math $i + 1)] ''
+#         set argv (string match -v -- '' $argv)
+#         break
+#     end
+# end
+
+# -v/--volume flags (leading only, so `hive grep -v x` still works):
+# relative host paths are resolved and mounted at the same absolute path.
+set VOLUMES
+while contains -- "$argv[1]" -v --volume
+    set -l spec (string split -m1 : -- $argv[2])
+    set -l src (path resolve -- $spec[1])
+    if test -z "$spec[1]"; or not test -e "$src"
+        echo "hive: volume path '$argv[2]' does not exist" >&2
+        exit 1
+    end
+    set -q spec[2]; and set -l dst $spec[2]; or set -l dst $src
+    set -a VOLUMES -v "$src:$dst"
+    set -e argv[1..2]
+end
+
+# Create a deterministic container name from the current working directory
+set PROJECT_HASH (string replace -ra '[^a-zA-Z0-9]' '-' (pwd))
+set CONTAINER_NAME "benedikt-agent$PROJECT_HASH"
+
+# Separate subcommands from a container command.
+#   hivemind stop            → subcommand: stop all running agent containers
+#   hivemind reconnect       → subcommand: re-establish this container's networking
+#   hivemind                 → default: run claude in the container
+#   hivemind <cmd...>        → run <cmd...> in the container
+#   hivemind --shell -- <c>  → run <c> via `bash -lc` in the container
+#   hivemind -- <cmd...>     → run <cmd...> in the container, even if <cmd>
+#                              collides with a subcommand name (e.g. `-- stop`)
+if set -l sep (contains -i -- -- $argv)
+    # Everything after `--` is a container command, no subcommand dispatch.
+    set CONTAINER_CMD $argv[(math $sep + 1)..-1]
+else
+    # No separator: first word may be a subcommand.
+    switch "$argv[1]"
+        case list
+            docker ps --filter "name=benedikt-agent*" \
+                --format 'table {{.Names}}\t{{.Status}}'
+            exit $status
+        case stop
+            docker ps --filter "name=benedikt-agent*" --filter status=running -aq \
+                | xargs --no-run-if-empty docker stop
+            exit $status
+        case reconnect
+            # Restart networking/DNS after a host network change (wifi/VPN).
+            docker network disconnect bridge $CONTAINER_NAME
+            docker network connect bridge $CONTAINER_NAME
+            exit $status
+        case rm
+            # Remove all stopped agent containers
+            docker ps --filter "name=benedikt-agent*" -aq \
+                | xargs --no-run-if-empty docker rm --force
+            exit $status
+        case build
+            # build the docker image (default: benedikt-agent), from Dockerfile.base
+            echo "Building docker image $IMAGE with UID=$UID and GID=$GID"
+            docker build  --build-arg UID=$UID --build-arg GID=$GID -t $IMAGE -f ~/agents/Dockerfile.base ~/agents
+            exit $status
+    end
+    set CONTAINER_CMD $argv
+end
+
+# Command to run inside the container
+if test $SHELL_MODE -eq 1
+    set HIVE_COMMAND bash -lc "$CONTAINER_CMD"
+else if set -q CONTAINER_CMD[1]
+    set HIVE_COMMAND $CONTAINER_CMD
+else
+    # $HOME is the host's home here; claude is on the image's PATH
+    set HIVE_COMMAND claude
+end
+# Common docker args
+set DOCKER_ARGS \
+    -d --init \
+    # --user $UID:$GID \
+    --name $CONTAINER_NAME \
+    -v $AGENT_DIR/.claude:/home/benedikt/.claude \
+    -v $AGENT_DIR/.pi:/home/benedikt/.pi \
+    -v $AGENT_DIR/.claude.json:/home/benedikt/.claude.json \
+    -v $AGENT_DIR/.history:/home/benedikt/.history \
+    -v $AGENT_DIR/.bash_history:/home/benedikt/.bash_history \
+    # -v $AGENT_DIR/.bashrc:/home/benedikt/.bashrc \
+    -e UV_PROJECT_ENVIRONMENT='.uv-agent' \
+    --tmpfs /tmp \
+    --cap-drop=ALL \
+    -v (pwd):(pwd) \
+    -w (pwd) \
+    --network=host \
+    --label "hive.volumes=$VOLUMES" \
+    $VOLUMES
+
+set EXEC_ARGS -it
+if test $ROOT_MODE -eq 1
+    set EXEC_ARGS $EXEC_ARGS --user root --privileged
+end
+
+# The container idles on `sleep infinity`; every session is a `docker exec`,
+# so claude/pi exiting never stops the container and restarts don't re-run them.
+if docker container inspect $CONTAINER_NAME >/dev/null 2>&1
+    # Mounts are fixed at creation; refuse silently dropping requested volumes.
+    set -l have (docker inspect -f '{{index .Config.Labels "hive.volumes"}}' $CONTAINER_NAME)
+    if set -q VOLUMES[1]; and test "$have" != "$VOLUMES"
+        echo "hive: $CONTAINER_NAME exists with other volumes ($have)." >&2
+        echo "      Recreate it to apply: docker rm -f $CONTAINER_NAME" >&2
+        exit 1
+    end
+    if test (docker inspect -f '{{.State.Running}}' $CONTAINER_NAME) != true
+        echo "Starting existing container: $CONTAINER_NAME"
+        docker start $CONTAINER_NAME >/dev/null; or exit $status
+    end
+else
+    if test $ROOT_MODE -eq 1
+        set DOCKER_ARGS $DOCKER_ARGS --user root --privileged
+    end
+    docker run $DOCKER_ARGS $IMAGE sleep infinity >/dev/null; or exit $status
+end
+exec docker exec $EXEC_ARGS $CONTAINER_NAME $HIVE_COMMAND

@@ -1,0 +1,55 @@
+FROM ubuntu:latest
+
+RUN apt update && apt install -yy sudo
+# Create a new user and group named "benedikt" instead of "ubuntu" and set the UID and GID to match the host user
+ARG UID=1000
+ARG GID=1000
+RUN echo "Setting UID=${UID} & GID=${GID}" && usermod -l benedikt ubuntu \
+    # && groupmod -g $GID benedikt \
+    && groupmod -n benedikt ubuntu \
+    && usermod -u $UID benedikt \
+    && usermod -d /home/benedikt -m benedikt
+
+RUN --mount=target=/var/lib/apt/lists,type=cache \
+    --mount=target=/var/cache/apt,type=cache \ 
+    apt-get -y update
+RUN --mount=target=/var/lib/apt/lists,type=cache \
+    --mount=target=/var/cache/apt,type=cache \
+    apt install -y apt-transport-https ca-certificates gnupg unzip curl software-properties-common curl gcc git python3 python3-pip python3-venv unzip nodejs npm chromium \
+    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-freefont-ttf g++
+
+RUN install -d -m 0755 /etc/apt/keyrings && \
+    curl https://packages.mozilla.org/apt/repo-signing-key.gpg | tee /etc/apt/keyrings/packages.mozilla.org.asc > /dev/null && \
+    echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" | tee -a /etc/apt/sources.list.d/mozilla.list > /dev/null && \
+    echo 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000' | tee /etc/apt/preferences.d/mozilla 
+RUN --mount=target=/var/lib/apt/lists,type=cache \
+    --mount=target=/var/cache/apt,type=cache \ 
+    apt -y update && apt install -y firefox openjdk-25-jdk maven  
+RUN --mount=target=/var/lib/apt/lists,type=cache \
+    --mount=target=/var/cache/apt,type=cache \ 
+    apt install -y libgdal-dev
+
+RUN --mount=target=/var/lib/apt/lists,type=cache \
+    --mount=target=/var/cache/apt,type=cache \ 
+    apt install -yy bubblewrap socat
+WORKDIR /home/benedikt
+
+ADD ./install-dependencies.sh /usr/bin/install-dependencies.sh
+RUN passwd -d    benedikt  # no password
+
+COPY --from=ghcr.io/typst/typst:latest /bin/typst /usr/bin/typst
+
+USER benedikt
+# Non-login `docker exec` (e.g. `hive pi`) needs the user tool dirs on PATH.
+ENV PATH=/home/benedikt/.local/share/pi-agent/bin:/home/benedikt/.local/bin:/home/benedikt/.bun/bin:/home/benedikt/bin:$PATH
+RUN /usr/bin/install-dependencies.sh
+# RUN ln -s /home/benedikt/.bun/bin/bun /home/benedikt/.local/bin/bun
+# RUN ln -s /home/benedikt/.cargo/bin/cargo /home/benedikt/.local/bin/cargo
+COPY ./.agents /home/benedikt/.agents
+# RUN chown benedikt:benedikt /home/benedikt/.bashrc
+
+
+# Install pi outside ~/.pi/agent: hive mounts the host's ~/.pi over it at runtime,
+# which would hide the binary. Config/sessions still live in the mounted ~/.pi/agent.
+RUN curl -fsSL https://pi.dev/install.sh | PI_CODING_AGENT_DIR=/home/benedikt/.local/share/pi-agent sh
+RUN curl -fsSL https://claude.ai/install.sh | bash

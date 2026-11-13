@@ -4,3 +4,4 @@ models/gguf/*.gguf
 .pi
 .bash_history
 .history
+.claude*
